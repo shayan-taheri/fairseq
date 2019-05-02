@@ -402,7 +402,16 @@ def cli_main():
 
     if args.distributed_init_method is not None:
         # distributed training
-        distributed_main(args.device_id, args)
+        if torch.cuda.device_count() > 1:
+            start_rank = args.distributed_rank
+            args.distributed_rank = None  # assign automatically
+            torch.multiprocessing.spawn(
+                fn=distributed_main,
+                args=(args, start_rank),
+                nprocs=torch.cuda.device_count(),
+            )
+        else:
+            distributed_main(args.device_id, args)
     elif args.distributed_world_size > 1:
         # fallback for single node with multiple GPUs
         port = random.randint(10000, 20000)
