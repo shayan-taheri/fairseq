@@ -38,7 +38,7 @@ def main(args):
     task = tasks.setup_task(args)
 
     # Load dataset splits
-    load_dataset_splits(args, task)
+    load_dataset_splits(args, task, [args.train_subset, args.valid_subset], epoch=0)
 
     # Build model and criterion
     model = task.build_model(args)
@@ -86,6 +86,9 @@ def main(args):
     if not load_checkpoint(args, trainer, epoch_itr):
         trainer.dummy_train_step([dummy_batch])
 
+    if epoch_itr.epoch > 0:
+        epoch_itr = reload_train(args, epoch_itr, max_positions, task)
+
     # Train until the learning rate gets too small
     max_epoch = args.max_epoch or math.inf
     max_update = args.max_update or math.inf
@@ -107,8 +110,36 @@ def main(args):
         # save checkpoint
         if epoch_itr.epoch % args.save_interval == 0:
             save_checkpoint(args, trainer, epoch_itr, valid_losses[0])
+
+        epoch_itr = reload_train(args, epoch_itr, max_positions, task)
     train_meter.stop()
     print('| done training in {:.1f} seconds'.format(train_meter.sum))
+
+
+def reload_train(args, epoch_itr, max_positions, task):
+    print("| Reloading train data with epoch: ", epoch_itr.epoch)
+    timer = StopwatchMeter()
+    timer.start()
+    load_dataset_splits(args, task, [args.train_subset], epoch=epoch_itr.epoch)
+    epoch_state_dict = epoch_itr.state_dict()
+    epoch_itr = task.get_batch_iterator(
+        dataset=task.dataset(args.train_subset),
+        max_tokens=args.max_tokens,
+        max_sentences=args.max_sentences,
+        max_positions=max_positions,
+        ignore_invalid_inputs=True,
+        required_batch_size_multiple=args.required_batch_size_multiple,
+        seed=args.seed,
+        num_shards=args.distributed_world_size,
+        shard_id=args.distributed_rank,
+        num_workers=args.num_workers,
+    )
+    # don't fast-forward, if the data is sharded
+    if len(args.data.split(":")) > 0:
+        epoch_state_dict['iterations_in_epoch'] = 0
+    epoch_itr.load_state_dict(epoch_state_dict)
+    timer.stop()
+    return epoch_itr
 
 
 def train(args, trainer, task, epoch_itr):
@@ -128,7 +159,7 @@ def train(args, trainer, task, epoch_itr):
     )
 
     extra_meters = collections.defaultdict(lambda: AverageMeter())
-    valid_subsets = args.valid_subset.split(',')
+    first_valid = args.valid_subset.split(',')[0]
     max_update = args.max_update or math.inf
     for i, samples in enumerate(progress, start=epoch_itr.iterations_in_epoch):
         log_output = trainer.train_step(samples)
@@ -153,7 +184,7 @@ def train(args, trainer, task, epoch_itr):
 
         num_updates = trainer.get_num_updates()
         if args.save_interval_updates > 0 and num_updates % args.save_interval_updates == 0 and num_updates > 0:
-            valid_losses = validate(args, trainer, task, epoch_itr, valid_subsets)
+            valid_losses = validate(args, trainer, task, epoch_itr, [first_valid])
             save_checkpoint(args, trainer, epoch_itr, valid_losses[0])
 
         if num_updates >= max_update:
@@ -367,17 +398,20 @@ def load_checkpoint(args, trainer, epoch_itr):
     return False
 
 
-def load_dataset_splits(args, task):
-    task.load_dataset(args.train_subset, combine=True)
-    for split in args.valid_subset.split(','):
-        for k in itertools.count():
-            split_k = split + (str(k) if k > 0 else '')
-            try:
-                task.load_dataset(split_k, combine=False)
-            except FileNotFoundError as e:
-                if k > 0:
-                    break
-                raise e
+def load_dataset_splits(args, task, splits, epoch):
+    for split in splits:
+        if split == args.train_subset:
+            task.load_dataset(args.train_subset, combine=True, epoch=epoch)
+        else:
+            for split in args.valid_subset.split(','):
+                for k in itertools.count():
+                    split_k = split + (str(k) if k > 0 else '')
+                    try:
+                        task.load_dataset(split_k, combine=True, epoch=epoch)
+                    except FileNotFoundError as e:
+                        if k > 0:
+                            break
+                        raise e
 
 
 def distributed_main(i, args):
