@@ -42,6 +42,7 @@ class BlockPairDataset(FairseqDataset):
         block_size,
         break_mode="doc",
         short_seq_prob=0.1,
+        has_eos=True,
     ):
         super().__init__()
         self.dataset = dataset
@@ -57,11 +58,14 @@ class BlockPairDataset(FairseqDataset):
 
         assert len(dataset) == len(sizes)
 
+        doc_break_size = 1 if has_eos else 0
         if break_mode == "doc":
             cur_doc = []
             for sent_id, sz in enumerate(sizes):
+                assert not has_eos or sz != 0, "sentence cannot be size 0, \
+                    if there's eos at the end."
                 # empty line as document separator
-                if sz == 0:
+                if sz == doc_break_size:
                     if len(cur_doc) == 0:
                         continue
                     self.block_indices.append(cur_doc)
