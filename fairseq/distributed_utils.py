@@ -105,6 +105,10 @@ def all_reduce(tensor, group=None):
     return dist.all_reduce(tensor, group=group)
 
 
+def barrier():
+    return dist.barrier()
+
+
 def all_gather_list(data, group=None, max_size=16384):
     """Gathers arbitrary data from all nodes into a list.
 

@@ -32,6 +32,7 @@ def DistributedFairseqModel(args, model):
     # rendezvous with other workers
     args.distributed_rank = distributed_utils.distributed_init(args)
     print('| initialized host {} as rank {}'.format(socket.gethostname(), args.distributed_rank))
+    distributed_utils.barrier()
 
     # determine which DDP class to extend
     assert isinstance(model, BaseFairseqModel)
